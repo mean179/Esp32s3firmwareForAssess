@@ -9,9 +9,9 @@
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| 1 | 按下按键翻转 LED | ✅ 已实现，实物验证通过 |
-| 2 | 按键计数 + `STATUS` 上报 | ✅ 已实现（待本轮实测确认） |
-| 3 | `ON` / `OFF` / `RESET` 完整命令 | ⬜ 待做 |
+| 1 | 按下按键翻转 LED | ✅ 实测通过 |
+| 2 | 按键计数 + `STATUS` 上报 | ✅ 实测通过（PR #2） |
+| 3 | `ON` / `OFF` / `RESET` 完整命令 | ✅ 已实现（待本轮实测确认） |
 
 实测记录见 [docs/test-log.md](docs/test-log.md)。
 
@@ -32,12 +32,18 @@
 
 > ⚠️ 红色中针是电池电压（3.7–4.2 V），不是 3.3 V、也不是 5 V，全程不接任何东西。
 
-## 环境
+## 环境与烧录配置
 
-- **ESP-IDF v5.5.5**（`C:\APPs\ESPIDF\frameworks\esp-idf-v5.5.5`），xtensa-esp-elf 14.2.0
-- 目标芯片 `esp32s3`，flash 16 MB
-- 控制台 `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`，监视器 115200 8N1（USB CDC 实际不限速，按题面记录）
-- 配置在 `firmware/sdkconfig.defaults`；`sdkconfig` 与 `build/` 不入库
+| 项 | 值 |
+|---|---|
+| 工具链 | **ESP-IDF v5.5.5**（`C:\APPs\ESPIDF\frameworks\esp-idf-v5.5.5`），xtensa-esp-elf 14.2.0 |
+| 目标芯片 | `esp32s3`（工程里 `set(IDF_TARGET "esp32s3")`） |
+| Flash | 16 MB（`CONFIG_ESPTOOLPY_FLASHSIZE_16MB`） |
+| 控制台 | 原生 USB-Serial-JTAG：`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` |
+| 串口监视器 | 115200 8N1（USB CDC 实际不限速，按题面配置）；端口 = “USB 串行设备 (COMx)” |
+| USB 口 | 板载 USB-C 直连芯片 IO19/IO20，**板上没有 CH340/CP210x**，所以没有额外的 UART 口 |
+| 烧录方式 | `idf.py flash`（esptool 走 USB-Serial-JTAG）；**不要**选 JTAG/OpenOCD，那需要外部探针 |
+| 配置文件 | 全部在 `firmware/sdkconfig.defaults`；`sdkconfig` 与 `build/` 不入库 |
 
 ## 目录
 
@@ -77,7 +83,7 @@ idf.py -p COM3 flash monitor     # COM3 换成设备管理器里的 "USB 串行�
 - 退出监视器：`Ctrl+]`。
 - 不确定引脚时先跑 `tools/pin_scan`（见 docs/pins.md 第 5 节），30 秒就能测出来。
 
-## 当前行为（阶段 1）
+## 固件行为（阶段 3，完整命令集）
 
 上电后 LED 熄灭、计数为 0；USB 串口监视器连上后打印一次：
 
@@ -85,7 +91,7 @@ idf.py -p COM3 flash monitor     # COM3 换成设备管理器里的 "USB 串行�
 READY
 ```
 
-按下按键（稳定 30 ms 去抖确认）→ 计数 +1 且 LED 翻转 → 串口打印：
+按下按键（稳定 **30 ms** 去抖确认）→ 计数 +1 且 LED 翻转 → 串口打印：
 
 ```
 BUTTON COUNT=1 LED=1
@@ -98,12 +104,26 @@ BUTTON COUNT=2 LED=0
 ```
 
 串口命令按行接收（LF / CRLF / 裸 CR 都可），命令**区分大小写**，空行忽略，
-每行最多 32 个命令字符（超长整行丢弃，只报一次 `ERR`）：
+每行最多 32 个命令字符（超长整行丢弃，只报一次 `ERR`，下一行照常处理）：
 
 | 命令 | 作用 | 输出 |
 |---|---|---|
-| `STATUS` | 读 LED 与计数 | `LED=1 COUNT=2` |
-| 其它（含 `ON` / `OFF` / `RESET`） | 阶段 3 尚未实现 | `ERR` |
+| `ON` | LED 置开，**不改变计数** | `OK LED=1` |
+| `OFF` | LED 置关，**不改变计数** | `OK LED=0` |
+| `STATUS` | 读 LED 状态与按键计数 | `LED=1 COUNT=2` |
+| `RESET` | 计数清零，**不改变 LED** | `OK COUNT=0` |
+| 其它 | 非法命令，状态保持不变 | `ERR` |
+
+题面样例（无按键动作）：
+
+```
+STATUS → LED=0 COUNT=0
+ON     → OK LED=1
+STATUS → LED=1 COUNT=0
+RESET  → OK COUNT=0
+OFF    → OK LED=0
+UNKNOWN→ ERR
+```
 
 > READY 设计为“USB 主机连上后立即打印一次”：这块板没有 UART 桥，没人连监视器时
 > printf 会被丢弃，先打就看不见。
@@ -112,4 +132,5 @@ BUTTON COUNT=2 LED=0
 
 - 引脚已用 `tools/pin_scan` 在实物上实测确认：`LED=IO17`（闪 1 下）、`按键=IO39`（按下 1→0）。
   换列接线时只改 `board_config.h` 两行，主程序不用动。
-- `ON` / `OFF` / `RESET` 属于阶段 3，当前与其它非法命令一样回 `ERR`。
+- `idf.py monitor` 不回显你敲的字符（pyserial miniterm 的 “no echo” 设计，与本固件无关），
+  盲打后回车即可；详见 docs/test-log.md 第 2.2 节。

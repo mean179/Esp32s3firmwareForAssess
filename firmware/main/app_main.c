@@ -1,15 +1,20 @@
 /*
- * 考核题 H3 —— 阶段 2：按键计数 + 状态上报
+ * 考核题 H3 —— 阶段 3：完整命令集（ON / OFF / STATUS / RESET）
  *
- * 阶段 1 只有“按键翻转 LED”。本阶段加上：
- *   1. 按键计数：稳定按下 +1（长按只算一次），每次事件输出
- *      "BUTTON COUNT=n LED=x"
- *   2. 串口按行收命令：STATUS -> "LED=x COUNT=n"
- *   3. 行缓冲规则：每行最多 32 个命令字符；超长整行丢弃到换行，只报一次 ERR；
- *      空行忽略；命令区分大小写
- *   4. 行结束符：LF、CRLF、裸 CR 都算一行结束
- *
- * ON / OFF / RESET 属于阶段 3，本阶段和其它非法命令一样回 ERR。
+ * 固件行为（与题面逐条对应）：
+ *   1. 上电：LED 熄灭、计数 0；USB 监视器连上后打印一次 READY
+ *   2. 按键：稳定按下 -> 计数 +1 且 LED 翻转，输出 "BUTTON COUNT=n LED=x"；
+ *      按住不放只算一次，松开不计数；去抖稳定确认 30 ms
+ *   3. 命令（按行、区分大小写、忽略空行）：
+ *        ON     -> LED 置开，不动计数      -> "OK LED=1"
+ *        OFF    -> LED 置关，不动计数      -> "OK LED=0"
+ *        STATUS -> 读状态                  -> "LED=x COUNT=n"
+ *        RESET  -> 计数清零，不动 LED      -> "OK COUNT=0"
+ *        其它   -> "ERR"，LED 与计数不变
+ *   4. 行缓冲：每行最多 32 个命令字符；超长整行丢弃到换行，只报一次 ERR，
+ *      之后下一行合法命令照常处理
+ *   5. 行结束符：LF、CRLF、裸 CR 都算一行结束
+ *   6. 非阻塞：按键与串口在同一个循环里轮询，按住按键期间串口照常响应
  *
  * 为什么主循环不会被串口卡住：
  *   本板串口是原生 USB-Serial-JTAG。IDF 的 VFS 默认实现就是
@@ -134,13 +139,21 @@ static void console_init(void)
 
 static void handle_command(const char *cmd)
 {
-    if (strcmp(cmd, "STATUS") == 0) {
+    if (strcmp(cmd, "ON") == 0) {
+        led_set(true);                       /* 只改 LED，不动计数 */
+        printf("OK LED=1\n");
+    } else if (strcmp(cmd, "OFF") == 0) {
+        led_set(false);                      /* 只改 LED，不动计数 */
+        printf("OK LED=0\n");
+    } else if (strcmp(cmd, "STATUS") == 0) {
         printf("LED=%d COUNT=%u\n", s_led_on ? 1 : 0, (unsigned)s_count);
-        return;
+    } else if (strcmp(cmd, "RESET") == 0) {
+        s_count = 0;                         /* 只清计数，不动 LED */
+        printf("OK COUNT=0\n");
+    } else {
+        /* 非法命令（含大小写不符）：回 ERR，状态保持不变 */
+        printf("ERR\n");
     }
-
-    /* 阶段 3 才实现 ON / OFF / RESET，这里先按非法命令同样处理 */
-    printf("ERR\n");
 }
 
 /* 每轮主循环调用一次：能读多少读多少，读不到就立刻返回 */
