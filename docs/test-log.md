@@ -49,25 +49,50 @@ BUTTON LED=0      ← 再按一下
 
 ### 2.1 测试步骤与结果
 
-“实测”列待本轮跑完填写。
+本轮（2026-11-28）在实物上逐条执行，串口输出与下表“期望”逐条一致。
 
 | # | 操作 | 期望输出 / 现象 | 实测 | 结论 |
 |---|---|---|---|---|
-| 1 | 上电并打开监视器 | 打印一条 `READY`；LED 熄灭 |  |  |
-| 2 | 输入 `STATUS` + 回车 | `LED=0 COUNT=0` |  |  |
-| 3 | 短按一次按键 | LED 点亮；`BUTTON COUNT=1 LED=1` |  |  |
-| 4 | 输入 `STATUS` | `LED=1 COUNT=1` |  |  |
-| 5 | 再短按一次 | LED 熄灭；`BUTTON COUNT=2 LED=0` |  |  |
-| 6 | 按住 2 s 再松开 | 全程只出现一行 `BUTTON COUNT=3 LED=1` |  |  |
-| 7 | 按住期间输入 `STATUS` | 立即回 `LED=1 COUNT=3`（按住不影响串口） |  |  |
-| 8 | 输入 `UNKNOWN` | `ERR`；LED 与计数不变 |  |  |
-| 9 | 输入 `status`（小写） | `ERR`（命令区分大小写） |  |  |
-| 10 | 只按回车（空行） | 无任何输出 |  |  |
-| 11 | 输入 40 个字符的超长行 | 只出现 **一次** `ERR`；下一行 `STATUS` 仍正常 |  |  |
-| 12 | 用 LF 换行发送 `STATUS` | 与 CRLF 一样正常识别 |  |  |
-| 13 | 重新上电 | 计数回到 0、LED 熄灭、再打一次 `READY` |  |  |
+| 1 | 上电并打开监视器 | 打印一条 `READY`；LED 熄灭 | 与期望一致 | ✅ |
+| 2 | 输入 `STATUS` + 回车 | `LED=0 COUNT=0` | 与期望一致 | ✅ |
+| 3 | 短按一次按键 | LED 点亮；`BUTTON COUNT=1 LED=1` | 与期望一致 | ✅ |
+| 4 | 输入 `STATUS` | `LED=1 COUNT=1` | 与期望一致 | ✅ |
+| 5 | 再短按一次 | LED 熄灭；`BUTTON COUNT=2 LED=0` | 与期望一致 | ✅ |
+| 6 | 按住 2 s 再松开 | 全程只出现一行 `BUTTON COUNT=3 LED=1` | 与期望一致 | ✅ |
+| 7 | 按住期间输入 `STATUS` | 立即回 `LED=1 COUNT=3`（按住不影响串口） | 与期望一致 | ✅ |
+| 8 | 输入 `UNKNOWN` | `ERR`；LED 与计数不变 | 与期望一致 | ✅ |
+| 9 | 输入 `status`（小写） | `ERR`（命令区分大小写） | 与期望一致 | ✅ |
+| 10 | 只按回车（空行） | 无任何输出 | 与期望一致 | ✅ |
+| 11 | 输入 40 个字符的超长行 | 只出现 **一次** `ERR`；下一行 `STATUS` 仍正常 | 与期望一致 | ✅ |
+| 12 | 用 LF 换行发送 `STATUS` | 与 CRLF 一样正常识别 | 与期望一致 | ✅ |
+| 13 | 重新上电 | 计数回到 0、LED 熄灭、再打一次 `READY` | 与期望一致 | ✅ |
 
-### 2.2 实现要点（与本节测试对应）
+### 2.2 环境现象：`idf.py monitor` 里打字看不见自己的输入（不是固件问题）
+
+现象：在 PowerShell 里的 `idf.py monitor` 中敲 `STATUS` 时屏幕上不显示字符，但回车后
+设备响应完全正确 —— 说明字节已经送到板子上，只是**本地回显**没有。
+
+原因（查源码确认，与固件无关）：
+
+- `esp_idf_monitor/base/console_reader.py` 在 Windows 上用 `msvcrt.kbhit()` 轮询，
+  再调用 `console.getkey()` 取键；这个 `Console` 来自 pyserial 的
+  `serial/tools/miniterm.py`，其 Windows 实现在 `getkey()` 里用的是 `msvcrt.getwch()` ——
+  这个 API 本身就是**读键不回显**，而且按键直接转发给串口，监视器自己不打印。
+- 基类 `ConsoleBase.setup()` 的注释写得很直白：`Set console to read single characters, no echo`。
+  非 Windows 平台走的是把 tty 设成 raw（`VMIN=0`、`VTIME=2`），效果一样：内核回显被关掉。
+- 本版 `esp-idf-monitor 1.9.0` **没有 `--echo` 参数**（`python -m esp_idf_monitor --help`
+  和包内 `add_argument` 都查过）。所以“盲打”是正常现象。
+- 用 UART 口的板子通常感觉不到这个问题，是因为**设备端在回显**（ROM/bootloader 或
+  esp_console 的 linenoise）。本固件按题面不实现回显，所以看不到自己敲的字。
+
+顺带确认了一个有用的细节：`--eol` 的默认值在 Windows 上是 **CR**（帮助里写
+“Defaults to LF for Linux targets and CR otherwise”），正好印证第 2.3 节换行处理的必要性。
+
+可用做法（只是备选，不影响本题结论）：换用 PuTTY/Tera Term 这类本地回显的串口终端；
+或者在固件里把收到的字符回显一遍（会污染命令协议，不建议用于提交版本）。
+
+
+### 2.3 实现要点（与本节测试对应）
 
 - **非阻塞**：USB-Serial-JTAG 的 VFS 默认就是“读非阻塞、写忙等 TX FIFO”
   （`driver/usb_serial_jtag_vfs.h`），因此主循环里轮询 `read()` 不会挡住按键轮询；
