@@ -1,0 +1,12 @@
+# ---- 目标芯片与 flash ----
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# ---- 控制台 ----
+# 本板没有 USB-UART 桥（板上无 CH340/CP210x），USB-C 直连 ESP32-S3 的
+# IO19/IO20 原生 USB-Serial-JTAG。所以控制台必须走 USB-Serial-JTAG，
+# 不能用默认的 UART0（UART0 在本板接到了 4G 模组位）。
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# 题面要求按 115200 配置串口监视器（USB CDC 实际不限速，仅作记录）
+CONFIG_ESPTOOLPY_MONITOR_BAUD=115200

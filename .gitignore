@@ -1,0 +1,16 @@
+# ---- ESP-IDF 构建输出（本机生成，不入库）----
+build/
+sdkconfig
+sdkconfig.old
+*.bin
+*.elf
+*.map
+
+# ---- 本机生成的日志 ----
+*.log
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
