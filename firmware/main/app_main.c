@@ -1,25 +1,43 @@
 /*
- * 考核题 H3 —— 阶段 1：按下按键翻转外接 LED
+ * 考核题 H3 —— 阶段 2：按键计数 + 状态上报
  *
- * 本阶段只做一件事：按键稳定按下 -> LED 状态翻转 -> 串口打一行日志。
- * 去抖采用“采样 + 变化计时 + 稳定电平确认”，全过程不阻塞主循环；
- * 计数、STATUS、ON/OFF/RESET 命令在阶段 2 / 阶段 3 叠加，此处不提前实现。
+ * 阶段 1 只有“按键翻转 LED”。本阶段加上：
+ *   1. 按键计数：稳定按下 +1（长按只算一次），每次事件输出
+ *      "BUTTON COUNT=n LED=x"
+ *   2. 串口按行收命令：STATUS -> "LED=x COUNT=n"
+ *   3. 行缓冲规则：每行最多 32 个命令字符；超长整行丢弃到换行，只报一次 ERR；
+ *      空行忽略；命令区分大小写
+ *   4. 行结束符：LF、CRLF、裸 CR 都算一行结束
  *
- * 串口：本板无 USB-UART 芯片，控制台走 ESP32-S3 原生 USB-Serial-JTAG
- *      （sdkconfig.defaults 已把 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG 打开）。
+ * ON / OFF / RESET 属于阶段 3，本阶段和其它非法命令一样回 ERR。
+ *
+ * 为什么主循环不会被串口卡住：
+ *   本板串口是原生 USB-Serial-JTAG。IDF 的 VFS 默认实现就是
+ *   “读非阻塞 + 写忙等 TX FIFO”（见 driver/usb_serial_jtag_vfs.h 注释），
+ *   没有数据时 read() 立刻返回 -1/EWOULDBLOCK，所以轮询按键和轮询串口
+ *   可以在同一个循环里，谁也不用等谁。
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 
 #include "board_config.h"
 
-static bool s_led_on = false;
+/* 题面：每行最多 32 个命令字符（不含行结束符） */
+#define CMD_MAX_CHARS 32
+
+/* 应用状态：上电后 LED 灭、计数 0 */
+static bool     s_led_on = false;
+static uint32_t s_count  = 0;
 
 /*
  * 统一延时入口。
@@ -103,6 +121,65 @@ static bool button_take_press(void)
     return false;
 }
 
+/* ---------------- 串口命令 ---------------- */
+
+static void console_init(void)
+{
+    /*
+     * 默认 RX 换行转换是 CRLF：监视器按回车发的是裸 CR，会被 VFS 的
+     * look-ahead 挂住（等下一个字节）。这里关掉转换，自己同时认 \r 和 \n。
+     */
+    usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_LF);
+}
+
+static void handle_command(const char *cmd)
+{
+    if (strcmp(cmd, "STATUS") == 0) {
+        printf("LED=%d COUNT=%u\n", s_led_on ? 1 : 0, (unsigned)s_count);
+        return;
+    }
+
+    /* 阶段 3 才实现 ON / OFF / RESET，这里先按非法命令同样处理 */
+    printf("ERR\n");
+}
+
+/* 每轮主循环调用一次：能读多少读多少，读不到就立刻返回 */
+static void console_poll(void)
+{
+    static char   line[CMD_MAX_CHARS + 1];
+    static size_t len      = 0;
+    static bool   overflow = false;
+
+    char    buf[32];
+    ssize_t n;
+
+    while ((n = read(STDIN_FILENO, buf, sizeof(buf))) > 0) {
+        for (ssize_t i = 0; i < n; i++) {
+            const char c = buf[i];
+
+            if (c == '\r' || c == '\n') {            /* 一行结束 */
+                if (!overflow && len > 0) {
+                    line[len] = '\0';
+                    handle_command(line);
+                }
+                len      = 0;                        /* 空行直接忽略 */
+                overflow = false;
+                continue;
+            }
+
+            if (overflow) {
+                continue;                            /* 超长：丢弃到换行 */
+            }
+            if (len >= CMD_MAX_CHARS) {              /* 第 33 个字符 */
+                printf("ERR\n");                     /* 只报一次 */
+                overflow = true;
+                continue;
+            }
+            line[len++] = c;
+        }
+    }
+}
+
 /* ---------------- 入口 ---------------- */
 
 void app_main(void)
@@ -111,6 +188,7 @@ void app_main(void)
 
     led_init();
     button_init();
+    console_init();
     led_set(false);
 
     /*
@@ -139,9 +217,13 @@ void app_main(void)
             ready_sent = true;
         }
 
-        if (button_take_press()) {
+        console_poll();                    /* 串口：非阻塞轮询 */
+
+        if (button_take_press()) {         /* 按键：稳定按下才算一次 */
+            s_count++;
             led_set(!s_led_on);
-            printf("BUTTON LED=%d\n", s_led_on ? 1 : 0);
+            printf("BUTTON COUNT=%u LED=%d\n",
+                   (unsigned)s_count, s_led_on ? 1 : 0);
         }
 
         delay_ms(BUTTON_POLL_MS);
